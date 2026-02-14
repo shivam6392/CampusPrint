@@ -1,84 +1,65 @@
-const path = require('path');
-const { getPageCount } = require('../utils/pdfParser');
-const { calculateAmount } = require('../utils/codeGenerator');
-const { uploadFile, cleanupLocalFile } = require('../services/storageService');
+const cloudinary = require('../config/cloudinary');
+const Document = require('../models/Document');
+const streamifier = require('streamifier');
 
-const uploadPdf = async (req, res) => {
-  let filePath = null;
-
+exports.calculatePdfCost = async (req, res) => {
   try {
+
     if (!req.file) {
-      return res.status(400).json({ error: 'No PDF file uploaded' });
+      return res.status(400).json({
+        success: false,
+        error: 'No file uploaded'
+      });
     }
 
-    filePath = req.file.path;
-    const pages = await getPageCount(filePath);
-    const amount = calculateAmount(pages);
+    const uploadToCloudinary = () =>
+      new Promise((resolve, reject) => {
 
-    // Upload to cloud storage
-    const pdfUrl = await uploadFile(
-      filePath,
-      req.file.originalname,
-      req.user.id
-    );
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            resource_type: 'raw',
+            folder: 'campusprint'
+          },
+          (error, result) => {
+            if (result) resolve(result);
+            else reject(error);
+          }
+        );
 
-    // Cleanup local file
-    cleanupLocalFile(filePath);
+        streamifier
+          .createReadStream(req.file.buffer)
+          .pipe(stream);
+      });
+
+    const result = await uploadToCloudinary();
+
+    const pdfUrl = result.secure_url;
+    const uniqueCode = Date.now().toString();
+
+    await Document.create({
+      userId: req.user.id,
+      pdfUrl: pdfUrl,
+      pages: 1,
+      amount: 5,
+      paymentId: "temp",
+      uniqueCode: uniqueCode,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+    });
 
     res.json({
       success: true,
-      pdfUrl,
-      pages,
-      amount,
-      localPath: req.file.path // For create-order flow - we need to pass pdfUrl
+      pdfUrl: pdfUrl,
+      uniqueCode: uniqueCode
     });
+
   } catch (error) {
-    if (filePath) {
-      cleanupLocalFile(filePath);
-    }
-    console.error('Upload error:', error);
-    res.status(500).json({ error: error.message || 'Upload failed' });
-  }
-};
 
-// Alternative: Upload only, return pages/amount without cloud upload (for two-step flow)
-const calculatePdfCost = async (req, res) => {
-  let filePath = null;
+    console.error("Upload error:", error);
 
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No PDF file uploaded' });
-    }
-
-    filePath = req.file.path;
-    const pages = await getPageCount(filePath);
-    const amount = calculateAmount(pages);
-
-    // Upload to cloud storage
-    const pdfUrl = await uploadFile(
-      filePath,
-      req.file.originalname,
-      req.user.id
-    );
-
-    cleanupLocalFile(filePath);
-
-    res.json({
-      success: true,
-      pdfUrl,
-      pages,
-      amount
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
-  } catch (error) {
-    if (filePath) {
-      cleanupLocalFile(filePath);
-    }
-    console.error('Upload error:', error);
-    res.status(500).json({ error: error.message || 'Upload failed' });
-  }
-};
 
-module.exports = {
-  uploadPdf,
-  calculatePdfCost
+  }
 };
